@@ -1,29 +1,272 @@
+using System;
+using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
+enum PlayerState
+{
+	NORMAL,
+	HANGING
+}
+
 public class PlayerController : MonoBehaviour
 {
-    public Pickaxe pickaxe;
-    
-    void Update()
-    {
-        HandlePickaxeInput();
-    }
+	[Header("Dependencies")]
+	public InputActionAsset InputActions;
+	public Pickaxe pickaxe;
+	private Rigidbody _rigidbody;
 
-    void HandlePickaxeInput()
-    {
-        if (Mouse.current == null) return;
+	[Header("Detections")]
+	[SerializeField] private Transform _groundCheckPos;
+	[SerializeField] private float _groundCheckRadius = 0.2f;
+	[SerializeField] private LayerMask _groundLayer;
 
-        if (Mouse.current.leftButton.wasPressedThisFrame)
-        {
-            pickaxe.Charge();
-            print(System.DateTime.Now);
-        }
+	[Header("Hanging Settings")]
+	[SerializeField] private Transform _ledgeCheckPos;
+	[SerializeField] private float _ledgeCheckRadius = 0.3f;
+	[SerializeField] private LayerMask _ledgeLayer;
+	
+	[Header("Movement")]
+	[SerializeField] private float _moveSpeed = 5f;
+	[SerializeField] private float _jumpForce = 50f;
+	
+	[Header("Swing Jump Settings")]
+	[SerializeField] private float _swingHorizontalMultiplier = 3f;
+	[SerializeField] private float _swingVerticalBase = 8f;
+	[SerializeField] private float _swingVerticalMultiplier = 1f;
 
-        if (Mouse.current.leftButton.wasReleasedThisFrame)
-        {
-            pickaxe.ThrowPickaxe();
-            print(System.DateTime.Now);
-        }
-    }
+	[SerializeField] private float _swingJumpForce = 300f;
+
+	[SerializeField] private float _momentumThreshold = 0.5f;
+	private bool _isGrounded => Physics.CheckSphere(_groundCheckPos.position, _groundCheckRadius, _groundLayer);
+	
+	private bool _canGrabLedge => Physics.CheckSphere(_ledgeCheckPos.position, _ledgeCheckRadius, _ledgeLayer);
+
+	private PlayerState _currentState = PlayerState.NORMAL;
+	private InputAction _moveInput;
+	private InputAction _jumpInput;
+
+	private GameObject _ledgeObject;
+	
+	private bool _jumpRequested = false;
+	private bool _hangRequested = false;
+	private bool _climbRequested = false;
+	
+	private float _currentMoveSpeed = 0f; // Hareket hızını takip et
+
+	void Awake()
+	{
+		_rigidbody = GetComponent<Rigidbody>();
+		var playerMap = InputActions.FindActionMap("Player");
+		_moveInput = playerMap.FindAction("Move");
+		_jumpInput = playerMap.FindAction("Jump");
+	    _groundLayer = (1 << 6) | (1 << 7);
+	}
+	
+	void OnEnable() => InputActions.FindActionMap("Player").Enable();
+	void OnDisable() => InputActions.FindActionMap("Player").Disable();
+
+	void Update()
+	{
+
+		if (_jumpInput.WasPressedThisFrame())
+		{
+			if (_currentState == PlayerState.HANGING)
+				_climbRequested = true;
+			else if (!_isGrounded && _canGrabLedge && _currentState == PlayerState.NORMAL)
+				_hangRequested = true;
+			else if (_isGrounded && _currentState == PlayerState.NORMAL)
+				_jumpRequested = true;
+		}
+	}
+
+	void FixedUpdate()
+	{
+		float horizontalVelocity = _rigidbody.linearVelocity.x;
+		switch (_currentState)
+		{
+			case PlayerState.NORMAL:
+				HandleNormalState();
+				break;
+			case PlayerState.HANGING:
+				HandleHangingState();
+				break;
+		}
+	}
+
+	void HandleNormalState()
+	{
+		HandlePickaxeInput(); 
+
+		MovePlayer();
+
+		if (_hangRequested)
+		{
+			StartHanging();
+			_hangRequested = false;
+			return;
+		}
+
+		if (_jumpRequested && _isGrounded)
+			Jump();
+	}
+
+	void HandleHangingState()
+	{
+		float horizontalInput = _moveInput.ReadValue<Vector2>().x;
+		_rigidbody.AddForce(Vector3.right * horizontalInput * _momentumThreshold, ForceMode.Force);
+		if (_climbRequested) 
+		{
+			ClimbUp();
+			_climbRequested = false;
+		}
+	}
+
+	void ClimbUp()
+	{
+		HingeJoint hinge = GetComponent<HingeJoint>();
+		if (hinge != null)
+			DestroyImmediate(hinge);
+		
+		_rigidbody.isKinematic = false;
+		_rigidbody.freezeRotation = true; 
+		
+		if (HasSwingMomentum())
+		{
+			_ledgeObject.GetComponent<Collider>().isTrigger = true;
+			SwingJump();
+			StartCoroutine(ResetLedgeCollider(_ledgeObject));
+		}
+		else
+		{
+			_ledgeObject.GetComponent<Collider>().isTrigger = true;
+			
+			float ledgeMaxY = _ledgeObject.GetComponent<Collider>().bounds.max.y;
+			
+			float playerHeight = GetComponent<Collider>().bounds.extents.y;
+			
+			transform.position = new Vector3(_ledgeObject.transform.position.x, ledgeMaxY + playerHeight, transform.position.z);
+			
+			_rigidbody.linearVelocity = Vector3.zero;
+			
+			StartCoroutine(ResetLedgeCollider(_ledgeObject, 0));
+		}
+		_currentState = PlayerState.NORMAL;
+		gameObject.transform.rotation = Quaternion.Euler(0, 0, 0);
+	}
+
+	void SwingJump()
+	{
+
+		Vector2 momentum = GetSwingMomentum();
+		float direction = momentum.x;
+		float strength = momentum.y;
+		
+		float horizontalVelocity = direction * strength * _swingHorizontalMultiplier;
+		float verticalVelocity = _swingVerticalBase + (strength * _swingVerticalMultiplier);
+		
+		_rigidbody.linearVelocity = new Vector3(horizontalVelocity, verticalVelocity, 0);
+	}
+
+	Vector2 GetSwingMomentum()
+	{
+		float horizontalVel = _rigidbody.linearVelocity.x;
+		float angularVel = _rigidbody.angularVelocity.z;
+		
+		if (Mathf.Abs(horizontalVel) < 0.1f)
+			horizontalVel = -angularVel * 2f;
+		
+		float direction = Mathf.Sign(horizontalVel);
+		float strength = Mathf.Abs(horizontalVel);
+		
+		return new Vector2(direction, strength);
+	}
+
+	System.Collections.IEnumerator ResetLedgeCollider(GameObject ledge, float delay = 0.3f)
+	{
+		yield return new WaitForSeconds(delay);
+		if (ledge != null)
+			ledge.GetComponent<Collider>().isTrigger = false;
+	}
+
+	bool HasSwingMomentum()
+	{
+		float velocity = Mathf.Abs(_rigidbody.linearVelocity.x);
+		float angularVelocity = Mathf.Abs(_rigidbody.angularVelocity.z);
+		float currentAngle = Mathf.Abs(transform.rotation.eulerAngles.z);
+		if (currentAngle > 180f)
+			currentAngle = 360f - currentAngle;
+		
+		return velocity > 0.2f || angularVelocity > 0.05f || currentAngle > 5f;
+	}
+
+	void StartHanging()
+	{
+		_rigidbody.freezeRotation = false;
+		
+		_currentState = PlayerState.HANGING;
+		_ledgeObject = GetLedgeObject();
+
+		_ledgeObject.GetComponent<Collider>().isTrigger = true;
+		
+		float horizontalVelocity = _currentMoveSpeed;
+		
+		if (_ledgeObject != null)
+		{
+			Vector3 ledgePosition = _ledgeObject.transform.position;
+			Vector3 hangPosition = new Vector3(ledgePosition.x, ledgePosition.y - 1f, transform.position.z);
+			transform.position = hangPosition;
+		}
+
+		HingeJoint hinge = gameObject.AddComponent<HingeJoint>();
+		hinge.connectedBody = _ledgeObject.GetComponent<Rigidbody>();
+		hinge.axis = Vector3.forward;
+
+		hinge.useLimits = true;
+		JointLimits limits = new JointLimits();
+		limits.min = -90f;
+		limits.max = 90f;
+		hinge.limits = limits;
+		
+		float targetAngular = -horizontalVelocity * 2f;
+		_rigidbody.angularVelocity = new Vector3(0, 0, targetAngular);
+	}
+	
+	void HandlePickaxeInput()
+	{
+		if (Mouse.current == null) return;
+		if (Mouse.current.leftButton.wasPressedThisFrame) pickaxe.Charge();
+		if (Mouse.current.leftButton.wasReleasedThisFrame) pickaxe.ThrowPickaxe();
+	}
+
+	void MovePlayer()
+	{
+		Vector2 inputVector = _moveInput.ReadValue<Vector2>();
+		Vector3 moveDirection = new Vector3(inputVector.x, 0, 0).normalized;
+		
+		float currentSpeed = _isGrounded ? _moveSpeed : _moveSpeed * 0.7f;
+		
+		_rigidbody.MovePosition(_rigidbody.position + moveDirection * currentSpeed * Time.fixedDeltaTime);
+		
+		_currentMoveSpeed = inputVector.x * _moveSpeed * -1;
+	}
+
+	void Jump()
+	{
+		Vector3 currentVelocity = _rigidbody.linearVelocity;
+		_rigidbody.linearVelocity = new Vector3(currentVelocity.x, 0, currentVelocity.z);
+		_rigidbody.AddForce(Vector3.up * _jumpForce, ForceMode.Impulse);
+		_jumpRequested = false;
+	}
+
+	GameObject GetLedgeObject()
+	{
+		Collider[] hitColliders = Physics.OverlapSphere(_ledgeCheckPos.position, _ledgeCheckRadius, _ledgeLayer);
+
+		if (hitColliders.Length > 0)
+			return hitColliders[0].gameObject;
+
+		return null;
+	}
+
 }
