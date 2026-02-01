@@ -30,6 +30,9 @@ public class Pet : MonoBehaviour
     // private const float _speedZ = 1f;
     private const float _rotationSpeed = 2048f;
 
+    // lazy follow
+    private const float _lazyFollowSpeed = 2f;
+
     void Start()
     {
         _currentState = State.IDLE;
@@ -51,8 +54,15 @@ public class Pet : MonoBehaviour
     {
         if (_currentState is State.IDLE || _currentState is State.HOLDING)
         {
+            // Hover effect
             float hover = Mathf.Sin(Time.time * _hoverSpeed) * _hoverAmplitude;
             transform.position = _basePosition + Vector3.up * hover;
+        }
+        if (_currentState is State.IDLE)
+        {
+            // Lazy follow player
+            Vector3 targetBase = player.transform.position + _defaultOffset;
+            _basePosition = Vector3.Lerp(_basePosition, targetBase, _lazyFollowSpeed * Time.fixedDeltaTime);
         }
         // if (_currentState is State.HOLDING)
         // {

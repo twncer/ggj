@@ -80,7 +80,9 @@ public class Player : MonoBehaviour
 		// MovePosition doesnt changes velocity
 		float speed = Mathf.Abs(_moveInput.ReadValue<Vector2>().x);
 		_animator.SetFloat("Speed", speed);
-		
+		_animator.SetBool("Jumping", !_isGrounded && _currentState == PlayerState.NORMAL);
+		_animator.SetBool("Hanging", _currentState == PlayerState.HANGING);
+
 		if (_jumpInput.WasPressedThisFrame())
 		{
 			if (_currentState == PlayerState.HANGING)
@@ -91,7 +93,6 @@ public class Player : MonoBehaviour
 				_jumpRequested = true;
 		}
 	}
-
 	void FixedUpdate()
 	{
 		float horizontalVelocity = _rigidbody.linearVelocity.x;
@@ -139,7 +140,11 @@ public class Player : MonoBehaviour
 			DestroyImmediate(hinge);
 		
 		_rigidbody.isKinematic = false;
-		_rigidbody.freezeRotation = true; 
+		_rigidbody.freezeRotation = true;
+		
+		// Ağırlık merkezini normale döndür
+		_rigidbody.automaticCenterOfMass = true;
+		_rigidbody.ResetCenterOfMass();
 		
 		if (HasSwingMomentum())
 		{
@@ -152,17 +157,21 @@ public class Player : MonoBehaviour
 			_ledgeObject.GetComponent<Collider>().isTrigger = true;
 			
 			float ledgeMaxY = _ledgeObject.GetComponent<Collider>().bounds.max.y;
-			
 			float playerHeight = GetComponent<Collider>().bounds.extents.y;
 			
-			transform.position = new Vector3(_ledgeObject.transform.position.x, ledgeMaxY + playerHeight, transform.position.z);
+			// Kazmanın üstüne tırman
+			transform.position = new Vector3(_ledgeObject.transform.position.x, ledgeMaxY + playerHeight + 0.1f, transform.position.z);
+			
+			// Rotasyonu düzelt (Y eksenindeki rotasyonu koru, X ve Z'yi sıfırla)
+			float currentYRotation = transform.eulerAngles.y;
+			transform.rotation = Quaternion.Euler(0, currentYRotation, 0);
 			
 			_rigidbody.linearVelocity = Vector3.zero;
+			_rigidbody.angularVelocity = Vector3.zero;
 			
-			StartCoroutine(ResetLedgeCollider(_ledgeObject, 0));
+			StartCoroutine(ResetLedgeCollider(_ledgeObject, 0.5f));
 		}
 		_currentState = PlayerState.NORMAL;
-		gameObject.transform.rotation = Quaternion.Euler(0, 0, 0);
 	}
 
 	void SwingJump()
@@ -202,17 +211,24 @@ public class Player : MonoBehaviour
 	bool HasSwingMomentum()
 	{
 		float velocity = Mathf.Abs(_rigidbody.linearVelocity.x);
-		float angularVelocity = Mathf.Abs(_rigidbody.angularVelocity.z);
-		float currentAngle = Mathf.Abs(transform.rotation.eulerAngles.z);
+		
+		Vector3 localAngularVel = transform.InverseTransformDirection(_rigidbody.angularVelocity);
+		float angularVelocity = Mathf.Abs(localAngularVel.z);
+		
+		Vector3 euler = transform.rotation.eulerAngles;
+		float currentAngle = Mathf.Abs(euler.x);
 		if (currentAngle > 180f)
 			currentAngle = 360f - currentAngle;
 		
-		return velocity > 0.2f || angularVelocity > 0.05f || currentAngle > 5f;
+		return velocity > 0.5f || angularVelocity > 0.1f || currentAngle > 10f;
 	}
 
 	void StartHanging()
 	{
 		_rigidbody.freezeRotation = false;
+		
+		_rigidbody.centerOfMass = Vector3.zero;
+		_rigidbody.automaticCenterOfMass = false;
 		
 		_currentState = PlayerState.HANGING;
 		_ledgeObject = GetLedgeObject();
@@ -223,14 +239,27 @@ public class Player : MonoBehaviour
 		
 		if (_ledgeObject != null)
 		{
-			Vector3 ledgePosition = _ledgeObject.transform.position;
-			Vector3 hangPosition = new Vector3(ledgePosition.x, ledgePosition.y - 1f, transform.position.z);
+			Collider ledgeCollider = _ledgeObject.GetComponent<Collider>();
+			Vector3 closestPoint = ledgeCollider.ClosestPoint(transform.position);
+			
+			Collider playerCollider = GetComponent<Collider>();
+			float playerTopOffset = playerCollider.bounds.max.y - transform.position.y;
+			
+			float offsetDistance = 0.5f;
+			Vector3 hangPosition = new Vector3(closestPoint.x, closestPoint.y - playerTopOffset - offsetDistance, transform.position.z);
 			transform.position = hangPosition;
 		}
 
 		HingeJoint hinge = gameObject.AddComponent<HingeJoint>();
 		hinge.connectedBody = _ledgeObject.GetComponent<Rigidbody>();
-		hinge.axis = Vector3.forward;
+		
+		hinge.axis = transform.InverseTransformDirection(Vector3.forward);
+		
+		Collider playerCol = GetComponent<Collider>();
+		float localTopY = playerCol.bounds.max.y - transform.position.y;
+		hinge.anchor = new Vector3(0, localTopY, 0);
+		hinge.autoConfigureConnectedAnchor = false;
+		hinge.connectedAnchor = Vector3.zero;
 
 		hinge.useLimits = true;
 		JointLimits limits = new JointLimits();
@@ -239,7 +268,7 @@ public class Player : MonoBehaviour
 		hinge.limits = limits;
 		
 		float targetAngular = -horizontalVelocity * 2f;
-		_rigidbody.angularVelocity = new Vector3(0, 0, targetAngular);
+		_rigidbody.angularVelocity = transform.InverseTransformDirection(new Vector3(0, 0, targetAngular));
 	}
 	
 	void HandlePickaxeInput()
