@@ -4,7 +4,9 @@ using UnityEngine.InputSystem;
 public class PlayerController : MonoBehaviour
 {
     public Pickaxe pickaxe;
-    
+    public Pet pet;
+    public Player player;
+
     void Update()
     {
         HandlePickaxeInput();
@@ -12,18 +14,23 @@ public class PlayerController : MonoBehaviour
 
     void HandlePickaxeInput()
     {
-        if (Mouse.current == null) return;
+        if (Keyboard.current == null) return;
 
-        if (Mouse.current.leftButton.wasPressedThisFrame)
+        if (Keyboard.current.spaceKey.wasPressedThisFrame)
         {
-            pickaxe.Charge();
-            print(System.DateTime.Now);
+            if (player._currentState is Player.PlayerState.HANGING)
+                return;
+            if (pickaxe.GetCurrentState() is Pickaxe.State.IDLE)
+                pickaxe.Charge();
+            else if (pickaxe.GetCurrentState() is Pickaxe.State.FIXED or
+                Pickaxe.State.FLYING or Pickaxe.State.RETURNING or
+                Pickaxe.State.DOLL)
+                pet.Fetch();
         }
-
-        if (Mouse.current.leftButton.wasReleasedThisFrame)
+        if (Keyboard.current.spaceKey.wasReleasedThisFrame)
         {
-            pickaxe.ThrowPickaxe();
-            print(System.DateTime.Now);
+            if (pickaxe.GetCurrentState() is Pickaxe.State.CHARGING)
+                pickaxe.ThrowPickaxe();
         }
     }
 }
